@@ -434,7 +434,7 @@ fn Compose(on_posted: impl Fn(Post) + 'static + Copy) -> impl IntoView {
                         class="btn btn-ghost btn-icon"
                         on:click=move |_| { if can_add_image() { if let Some(el) = file_input_ref.get() { el.click(); } } }
                         disabled=move || busy.get() || compressing.get() || !can_add_image()
-                        title=move || if pending_files.get().len() >= 4 { "max 4 images" } else { "attach photo(s)" }
+                        title=move || { if pending_files.get().len() >= 4 { "max 4 images" } else { "attach photo(s)" } }
                     >"📷"</button>
                     <button
                         class="btn btn-ghost btn-icon"
@@ -495,7 +495,7 @@ async fn compress_video(file: web_sys::File) -> Result<web_sys::Blob, String> {
 }
 
 #[component]
-fn PostCard(post: Post, on_deleted: impl Fn(String) + 'static + Copy) -> impl IntoView {
+fn PostCard(post: Post, on_deleted: impl Fn(String) + Send + Sync + 'static + Copy) -> impl IntoView {
     let auth = expect_context::<AuthCtx>();
     let post = RwSignal::new(post);
     let show_comments = RwSignal::new(false);
