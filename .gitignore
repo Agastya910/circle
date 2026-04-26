@@ -1,0 +1,18 @@
+# Build output
+target/
+client/dist/
+worker/build/
+
+# Local env / secrets — never commit
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Wrangler local state
+.wrangler/
+
+# Editor / agent state
+.vscode/
+.idea/
+.claude/

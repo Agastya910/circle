@@ -1,0 +1,30 @@
+[package]
+name = "circle-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = { version = "0.7" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window", "Storage", "Request", "RequestInit", "RequestMode",
+    "Response", "Headers", "Navigator", "ServiceWorker",
+    "ServiceWorkerContainer", "ServiceWorkerRegistration",
+    "PushManager", "PushSubscription", "PushSubscriptionOptionsInit",
+    "PushEncryptionKeyName",
+    "Notification", "NotificationPermission",
+    "HtmlInputElement", "HtmlTextAreaElement", "File", "FileList",
+    "HtmlCanvasElement", "CanvasRenderingContext2d", "Blob", "HtmlImageElement",
+    "Url", "FormData",
+]}
+console_error_panic_hook = "0.1"
+gloo-net = { version = "0.6", features = ["http"] }
+gloo-storage = "0.3"
+
+serde.workspace = true
+serde_json.workspace = true
+
+circle-shared = { path = "../shared" }

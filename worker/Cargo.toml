@@ -1,0 +1,28 @@
+[package]
+name = "circle-worker"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = { version = "0.5", features = ["http", "d1"] }
+worker-macros = "0.5"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+hex = "0.4"
+sha2 = { version = "0.10", default-features = false }
+base64 = "0.22"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"] }
+
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+circle-shared = { path = "../shared" }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

@@ -1,0 +1,31 @@
+name = "circle-api"
+main = "build/worker/shim.mjs"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "worker-build --release && node patch-shim.mjs"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "circle-db"
+database_id = "b1e8176f-6252-4c39-9b00-21e947eee649"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "circle-media"
+
+# VAPID keys, session secret: set via `wrangler secret put NAME`
+# Required secrets:
+#   SESSION_SECRET     - random 32+ bytes hex
+#   VAPID_PUBLIC_KEY   - base64url, generated via web-push lib
+#   VAPID_PRIVATE_KEY  - base64url
+#   VAPID_SUBJECT      - mailto:you@example.com
+
+[vars]
+CIRCLE_ID = "default"
+ALLOWED_ORIGIN = "https://circle-app-59w.pages.dev"
+# ADMIN_SECRET is overridden in production via `wrangler secret put ADMIN_SECRET`.
+# Local `wrangler dev` uses this fallback; for local client dev, also override
+# ALLOWED_ORIGIN with `wrangler dev --var ALLOWED_ORIGIN:http://127.0.0.1:8080`.
+ADMIN_SECRET = "dev-admin-secret"
