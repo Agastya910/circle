@@ -21,7 +21,7 @@ window.compressVideo = function (file, maxDurationSec, targetBitrate, maxWidth =
     video.onloadedmetadata = async () => {
       const duration = video.duration;
       if (!isFinite(duration)) { cleanup(); reject("could not read video duration"); return; }
-      if (duration > maxDurationSec + 0.25) {
+      if (duration > maxDurationSec + 0.5) {
         cleanup();
         reject(`video too long (${duration.toFixed(1)}s); max ${maxDurationSec}s`);
         return;

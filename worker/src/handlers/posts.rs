@@ -16,10 +16,10 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let db = db(&ctx.env)?;
     let rows = db
         .prepare(
-            "SELECT p.id, p.body, p.image_key, p.video_key, p.created_at,
+            "SELECT p.id, p.body, p.image_key, p.video_key, p.media_keys, p.created_at,
                     u.id as author_id, u.display_name, u.avatar_key
              FROM posts p JOIN users u ON p.author_id = u.id
-             WHERE p.circle_id = ?1
+             WHERE p.circle_id = ?1 AND p.deleted_at IS NULL
              ORDER BY p.created_at DESC
              LIMIT 50",
         )
@@ -33,6 +33,10 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     for r in raw {
         let reactions = load_reactions(&db, &r.id, &session.user_id).await?;
         let comment_count = load_comment_count(&db, &r.id).await?;
+        let media_keys: Vec<String> = r.media_keys
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
         posts.push(Post {
             id: r.id,
             author: User {
@@ -43,6 +47,7 @@ pub async fn list(req: Request, ctx: RouteContext<()>) -> Result<Response> {
             body: r.body.filter(|s| !s.is_empty()),
             image_key: r.image_key.filter(|s| !s.is_empty()),
             video_key: r.video_key.filter(|s| !s.is_empty()),
+            media_keys,
             created_at: r.created_at,
             reactions,
             comment_count,
@@ -65,18 +70,34 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
 
     let has_content = body.body.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         || body.image_key.is_some()
-        || body.video_key.is_some();
+        || body.video_key.is_some()
+        || !body.media_keys.is_empty();
     if !has_content {
         return json_error(400, "post needs body, image, or video");
     }
+
+    if body.media_keys.len() > 4 {
+        return json_error(400, "max 4 images per post");
+    }
+    for key in &body.media_keys {
+        if !key.starts_with(&format!("{}-", session.user_id)) {
+            return json_error(403, "media key not owned by you");
+        }
+    }
+
+    let media_keys_json = if body.media_keys.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&body.media_keys).ok()
+    };
 
     let id = new_id();
     let now = now_secs();
 
     db(&ctx.env)?
         .prepare(
-            "INSERT INTO posts (id, circle_id, author_id, body, image_key, video_key, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO posts (id, circle_id, author_id, body, image_key, video_key, media_keys, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(&[
             id.clone().into(),
@@ -85,13 +106,12 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
             body.body.clone().unwrap_or_default().into(),
             body.image_key.clone().unwrap_or_default().into(),
             body.video_key.clone().unwrap_or_default().into(),
+            media_keys_json.clone().unwrap_or_default().into(),
             now.into(),
         ])?
         .run()
         .await?;
 
-    // Fan out notifications. Run synchronously for v1; move to ctx.wait_until
-    // if it ever approaches the CPU budget.
     let _ = fan_out_post(&ctx.env, &session.user_id).await;
 
     let post = Post {
@@ -104,11 +124,54 @@ pub async fn create(mut req: Request, ctx: RouteContext<()>) -> Result<Response>
         body: body.body,
         image_key: body.image_key,
         video_key: body.video_key,
+        media_keys: body.media_keys,
         created_at: now as i64,
         reactions: vec![],
         comment_count: 0,
     };
     Response::from_json(&post)
+}
+
+pub async fn delete(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let session = match require_session(&req, &ctx.env).await {
+        Ok(s) => s,
+        Err(_) => return json_error(401, "unauthorized"),
+    };
+
+    let post_id = match ctx.param("id") {
+        Some(v) => v.clone(),
+        None => return json_error(400, "missing id"),
+    };
+
+    let row = db(&ctx.env)?
+        .prepare(
+            "SELECT author_id FROM posts
+             WHERE id = ?1 AND circle_id = ?2 AND deleted_at IS NULL",
+        )
+        .bind(&[post_id.clone().into(), circle_id(&ctx.env).into()])?
+        .first::<AuthorRow>(None)
+        .await?;
+
+    let row = match row {
+        Some(r) => r,
+        None => return json_error(404, "post not found"),
+    };
+
+    if row.author_id != session.user_id {
+        return json_error(403, "not your post");
+    }
+
+    let now = now_secs();
+    db(&ctx.env)?
+        .prepare("UPDATE posts SET deleted_at = ?1 WHERE id = ?2")
+        .bind(&[now.into(), post_id.into()])?
+        .run()
+        .await?;
+
+    Response::ok(r#"{"ok":true}"#).map(|mut r| {
+        let _ = r.headers_mut().set("Content-Type", "application/json");
+        r
+    })
 }
 
 pub async fn comments(req: Request, ctx: RouteContext<()>) -> Result<Response> {
@@ -243,10 +306,16 @@ struct PostRow {
     body: Option<String>,
     image_key: Option<String>,
     video_key: Option<String>,
+    media_keys: Option<String>,
     created_at: i64,
     author_id: String,
     display_name: String,
     avatar_key: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct AuthorRow {
+    author_id: String,
 }
 
 #[derive(serde::Deserialize)]

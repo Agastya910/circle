@@ -93,6 +93,18 @@ pub async fn upload_blob(token: &str, key: &str, blob: web_sys::Blob) -> Result<
     Ok(())
 }
 
+pub async fn delete_post(token: &str, post_id: &str) -> Result<(), String> {
+    let resp = gloo_net::http::Request::delete(&format!("{}/api/posts/{}", base(), post_id))
+        .header("Authorization", &format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 pub async fn subscribe_push(
     token: &str,
     endpoint: &str,

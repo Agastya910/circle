@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS posts (
     body       TEXT,
     image_key  TEXT,
     video_key  TEXT,
+    media_keys TEXT,    -- JSON array of R2 keys, max 4 images
+    deleted_at INTEGER, -- NULL = live; unix secs when soft-deleted
     created_at INTEGER NOT NULL
 );
 

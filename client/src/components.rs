@@ -29,7 +29,6 @@ pub fn App() -> impl IntoView {
 #[component]
 fn Login() -> impl IntoView {
     let auth = expect_context::<AuthCtx>();
-    // false = sign-in mode, true = join (register) mode
     let join_mode = RwSignal::new(false);
     let invite = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
@@ -57,7 +56,7 @@ fn Login() -> impl IntoView {
             }
             wasm_bindgen_futures::spawn_local(async move {
                 match api::register(RegisterRequest { invite_code: i, display_name: n, pin: p }).await {
-                    Ok(a) => auth.set(a.token),
+                    Ok(a) => auth.set(a.token, a.user.id),
                     Err(e) => {
                         err.set(Some(if e.contains("403") {
                             "invite code is invalid or already used".into()
@@ -71,7 +70,7 @@ fn Login() -> impl IntoView {
         } else {
             wasm_bindgen_futures::spawn_local(async move {
                 match api::login(LoginRequest { display_name: n, pin: p }).await {
-                    Ok(a) => auth.set(a.token),
+                    Ok(a) => auth.set(a.token, a.user.id),
                     Err(e) => {
                         err.set(Some(if e.contains("401") {
                             "name or PIN incorrect".into()
@@ -148,6 +147,10 @@ fn Home() -> impl IntoView {
         posts.update(|list| list.insert(0, p));
     };
 
+    let on_deleted = move |id: String| {
+        posts.update(|list| list.retain(|p| p.id != id));
+    };
+
     let logout = move |_| { auth.logout(); };
 
     let enable_push = move |_| {
@@ -184,7 +187,7 @@ fn Home() -> impl IntoView {
                     <For
                         each=move || posts.get()
                         key=|p| p.id.clone()
-                        children=move |p| view! { <PostCard post=p /> }
+                        children=move |p| view! { <PostCard post=p on_deleted=on_deleted /> }
                     />
                 </Show>
             }
@@ -201,60 +204,88 @@ fn Compose(on_posted: impl Fn(Post) + 'static + Copy) -> impl IntoView {
     let busy = RwSignal::new(false);
     let err = RwSignal::new(None::<String>);
 
-    let pending_file: RwSignal<Option<web_sys::File>> = RwSignal::new(None);
+    // Multi-image: up to 4 files + their object-URL previews.
+    let pending_files: RwSignal<Vec<web_sys::File>> = RwSignal::new(vec![]);
+    let preview_urls: RwSignal<Vec<String>> = RwSignal::new(vec![]);
+
+    // Single video (still one at a time; mutually exclusive with images).
     let pending_video: RwSignal<Option<web_sys::Blob>> = RwSignal::new(None);
-    let preview_url: RwSignal<Option<String>> = RwSignal::new(None);
-    let preview_kind: RwSignal<&'static str> = RwSignal::new("image");
+    let video_preview_url: RwSignal<Option<String>> = RwSignal::new(None);
+
     let compressing = RwSignal::new(false);
     let file_input_ref = NodeRef::<html::Input>::new();
     let video_input_ref = NodeRef::<html::Input>::new();
+
+    let revoke_image_previews = move || {
+        for url in preview_urls.get() {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        preview_urls.set(vec![]);
+        pending_files.set(vec![]);
+    };
+
+    let revoke_video_preview = move || {
+        if let Some(url) = video_preview_url.get() {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        video_preview_url.set(None);
+        pending_video.set(None);
+    };
 
     let on_image_change = move |ev: web_sys::Event| {
         use wasm_bindgen::JsCast;
         let input = ev.target()
             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-        if let Some(input) = input {
-            if let Some(files) = input.files() {
-                if let Some(file) = files.item(0) {
-                    // Clear any pending video
-                    pending_video.set(None);
-                    if let Some(url) = preview_url.get() {
-                        let _ = web_sys::Url::revoke_object_url(&url);
-                    }
-                    if let Some(url) = web_sys::Url::create_object_url_with_blob(&file).ok() {
-                        preview_url.set(Some(url));
-                    }
-                    preview_kind.set("image");
-                    pending_file.set(Some(file));
-                    err.set(None);
+        let files_list = match input.and_then(|i| i.files()) {
+            Some(f) => f,
+            None => return,
+        };
+
+        let mut new_files = pending_files.get();
+        let mut new_urls = preview_urls.get();
+        let slots_left = 4usize.saturating_sub(new_files.len());
+
+        for i in 0..files_list.length().min(slots_left as u32) {
+            if let Some(file) = files_list.item(i) {
+                if let Ok(url) = web_sys::Url::create_object_url_with_blob(&file) {
+                    new_urls.push(url);
                 }
+                new_files.push(file);
             }
         }
+
+        revoke_video_preview();
+        if let Some(el) = video_input_ref.get() { el.set_value(""); }
+
+        pending_files.set(new_files);
+        preview_urls.set(new_urls);
+        err.set(None);
+
+        if let Some(el) = file_input_ref.get() { el.set_value(""); }
     };
 
     let on_video_change = move |ev: web_sys::Event| {
         use wasm_bindgen::JsCast;
         let input = ev.target()
             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-        let file = input.and_then(|i| i.files()).and_then(|fs| fs.item(0));
-        let file = match file { Some(f) => f, None => return };
+        let file = match input.and_then(|i| i.files()).and_then(|fs| fs.item(0)) {
+            Some(f) => f,
+            None => return,
+        };
 
-        pending_file.set(None);
-        pending_video.set(None);
+        revoke_image_previews();
+        if let Some(el) = file_input_ref.get() { el.set_value(""); }
+
+        revoke_video_preview();
         err.set(None);
         compressing.set(true);
 
-        let file_for_async = file.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match compress_video(file_for_async).await {
+            match compress_video(file).await {
                 Ok(blob) => {
-                    if let Some(old) = preview_url.get() {
-                        let _ = web_sys::Url::revoke_object_url(&old);
-                    }
                     if let Ok(u) = web_sys::Url::create_object_url_with_blob(&blob) {
-                        preview_url.set(Some(u));
+                        video_preview_url.set(Some(u));
                     }
-                    preview_kind.set("video");
                     pending_video.set(Some(blob));
                 }
                 Err(e) => err.set(Some(e)),
@@ -263,65 +294,83 @@ fn Compose(on_posted: impl Fn(Post) + 'static + Copy) -> impl IntoView {
         });
     };
 
-    let clear_media = move |_: web_sys::MouseEvent| {
-        if let Some(url) = preview_url.get() {
-            let _ = web_sys::Url::revoke_object_url(&url);
+    let remove_image = move |idx: usize| {
+        let mut files = pending_files.get();
+        let mut urls = preview_urls.get();
+        if idx < urls.len() {
+            let _ = web_sys::Url::revoke_object_url(&urls[idx]);
+            urls.remove(idx);
         }
-        preview_url.set(None);
-        pending_file.set(None);
-        pending_video.set(None);
-        if let Some(el) = file_input_ref.get() { el.set_value(""); }
-        if let Some(el) = video_input_ref.get() { el.set_value(""); }
+        if idx < files.len() { files.remove(idx); }
+        pending_files.set(files);
+        preview_urls.set(urls);
     };
+
+    let clear_video = move |_: web_sys::MouseEvent| { revoke_video_preview(); };
 
     let submit = move |_: web_sys::MouseEvent| {
         if busy.get() || compressing.get() { return; }
         let b = body.get();
-        let has_image = pending_file.get().is_some();
+        let has_images = !pending_files.get().is_empty();
         let has_video = pending_video.get().is_some();
-        if b.trim().is_empty() && !has_image && !has_video { return; }
+        if b.trim().is_empty() && !has_images && !has_video { return; }
         let token = match auth.token.get() { Some(t) => t, None => return };
         busy.set(true);
         err.set(None);
 
         wasm_bindgen_futures::spawn_local(async move {
-            let mut image_key: Option<String> = None;
+            let mut media_keys: Vec<String> = Vec::new();
             let mut video_key: Option<String> = None;
 
-            if let Some(file) = pending_file.get() {
+            for file in pending_files.get() {
                 match api::get_upload_url(&token, "image", None).await {
                     Ok(u) => match api::upload_blob(&token, &u.key, file.into()).await {
-                        Ok(()) => image_key = Some(u.key),
-                        Err(e) => { err.set(Some(format!("image upload failed: {}", e))); busy.set(false); return; }
+                        Ok(()) => media_keys.push(u.key),
+                        Err(e) => {
+                            err.set(Some(format!("image upload failed: {}", e)));
+                            busy.set(false);
+                            return;
+                        }
                     },
-                    Err(e) => { err.set(Some(format!("upload URL failed: {}", e))); busy.set(false); return; }
+                    Err(e) => {
+                        err.set(Some(format!("upload URL failed: {}", e)));
+                        busy.set(false);
+                        return;
+                    }
                 }
-            } else if let Some(blob) = pending_video.get() {
+            }
+
+            if let Some(blob) = pending_video.get() {
                 let ext = if blob.type_().starts_with("video/mp4") { "mp4" } else { "webm" };
                 match api::get_upload_url(&token, "video", Some(ext)).await {
                     Ok(u) => match api::upload_blob(&token, &u.key, blob).await {
                         Ok(()) => video_key = Some(u.key),
-                        Err(e) => { err.set(Some(format!("video upload failed: {}", e))); busy.set(false); return; }
+                        Err(e) => {
+                            err.set(Some(format!("video upload failed: {}", e)));
+                            busy.set(false);
+                            return;
+                        }
                     },
-                    Err(e) => { err.set(Some(format!("upload URL failed: {}", e))); busy.set(false); return; }
+                    Err(e) => {
+                        err.set(Some(format!("upload URL failed: {}", e)));
+                        busy.set(false);
+                        return;
+                    }
                 }
             }
 
             let req = NewPostRequest {
                 body: if b.trim().is_empty() { None } else { Some(b) },
-                image_key,
+                image_key: None,
                 video_key,
+                media_keys,
             };
             match api::create_post(&token, req).await {
                 Ok(p) => {
                     on_posted(p);
                     body.set(String::new());
-                    if let Some(url) = preview_url.get() {
-                        let _ = web_sys::Url::revoke_object_url(&url);
-                    }
-                    preview_url.set(None);
-                    pending_file.set(None);
-                    pending_video.set(None);
+                    revoke_image_previews();
+                    revoke_video_preview();
                     if let Some(el) = file_input_ref.get() { el.set_value(""); }
                     if let Some(el) = video_input_ref.get() { el.set_value(""); }
                 }
@@ -331,6 +380,8 @@ fn Compose(on_posted: impl Fn(Post) + 'static + Copy) -> impl IntoView {
         });
     };
 
+    let can_add_image = move || pending_files.get().len() < 4 && pending_video.get().is_none();
+
     view! {
         <div class="compose">
             <textarea
@@ -338,40 +389,64 @@ fn Compose(on_posted: impl Fn(Post) + 'static + Copy) -> impl IntoView {
                 prop:value=move || body.get()
                 on:input=move |ev| body.set(event_target_value(&ev))
             />
-            {move || preview_url.get().map(|url| {
-                let kind = preview_kind.get();
+
+            // Image thumbnails row (up to 4).
+            {move || {
+                let urls = preview_urls.get();
+                if urls.is_empty() {
+                    None
+                } else {
+                    Some(view! {
+                        <div class="compose-images">
+                            {urls.into_iter().enumerate().map(|(idx, url)| {
+                                view! {
+                                    <div class="compose-thumb">
+                                        <img src=url.clone() class="compose-thumb-img" />
+                                        <button
+                                            class="compose-clear-img"
+                                            on:click=move |_| remove_image(idx)
+                                        >"✕"</button>
+                                    </div>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    })
+                }
+            }}
+
+            // Video preview.
+            {move || video_preview_url.get().map(|url| {
                 view! {
                     <div class="compose-preview">
-                        {if kind == "video" {
-                            view! { <video src=url.clone() class="compose-preview-img" controls=true muted=true playsinline=true></video> }.into_any()
-                        } else {
-                            view! { <img src=url.clone() class="compose-preview-img" /> }.into_any()
-                        }}
-                        <button class="compose-clear-img" on:click=clear_media>"✕"</button>
+                        <video src=url class="compose-preview-img" controls=true muted=true playsinline=true></video>
+                        <button class="compose-clear-img" on:click=clear_video>"✕"</button>
                     </div>
                 }
             })}
+
             {move || compressing.get().then(|| view! {
                 <p class="hint">"compressing video…"</p>
             })}
+
             <div class="compose-actions">
                 <div style="display:flex; gap:6px">
                     <button
                         class="btn btn-ghost btn-icon"
-                        on:click=move |_| { if let Some(el) = file_input_ref.get() { el.click(); } }
-                        disabled=move || busy.get() || compressing.get()
-                        title="attach photo"
+                        on:click=move |_| { if can_add_image() { if let Some(el) = file_input_ref.get() { el.click(); } } }
+                        disabled=move || busy.get() || compressing.get() || !can_add_image()
+                        title=move || if pending_files.get().len() >= 4 { "max 4 images" } else { "attach photo(s)" }
                     >"📷"</button>
                     <button
                         class="btn btn-ghost btn-icon"
                         on:click=move |_| { if let Some(el) = video_input_ref.get() { el.click(); } }
-                        disabled=move || busy.get() || compressing.get()
-                        title="attach video (≤5s)"
+                        disabled=move || busy.get() || compressing.get() || !pending_files.get().is_empty()
+                        title="attach video (≤15s)"
                     >"🎥"</button>
                 </div>
                 <input
                     type="file"
                     accept="image/*"
+                    multiple=true
                     style="display:none"
                     node_ref=file_input_ref
                     on:change=on_image_change
@@ -401,11 +476,11 @@ async fn compress_video(file: web_sys::File) -> Result<web_sys::Blob, String> {
         .map_err(|e| format!("{:?}", e))?;
     let f: js_sys::Function = f.dyn_into().map_err(|_| "video.js not loaded")?;
 
-    // (file, maxDurationSec=5, targetBitrate=800kbps, maxWidth=640)
+    // (file, maxDurationSec=15, targetBitrate=800kbps, maxWidth=640)
     let promise = f.call3(
         &JsValue::NULL,
         &JsValue::from(file),
-        &JsValue::from_f64(5.0),
+        &JsValue::from_f64(15.0),
         &JsValue::from_f64(800_000.0),
     ).map_err(|e| format!("{:?}", e))?;
 
@@ -420,7 +495,7 @@ async fn compress_video(file: web_sys::File) -> Result<web_sys::Blob, String> {
 }
 
 #[component]
-fn PostCard(post: Post) -> impl IntoView {
+fn PostCard(post: Post, on_deleted: impl Fn(String) + 'static + Copy) -> impl IntoView {
     let auth = expect_context::<AuthCtx>();
     let post = RwSignal::new(post);
     let show_comments = RwSignal::new(false);
@@ -428,6 +503,8 @@ fn PostCard(post: Post) -> impl IntoView {
     let comments_loaded = RwSignal::new(false);
     let comment_text = RwSignal::new(String::new());
     let comment_busy = RwSignal::new(false);
+    let carousel_idx: RwSignal<usize> = RwSignal::new(0);
+    let delete_busy = RwSignal::new(false);
 
     let load_comments = move || {
         let pid = post.get().id.clone();
@@ -498,6 +575,24 @@ fn PostCard(post: Post) -> impl IntoView {
         });
     };
 
+    let do_delete = move |_: web_sys::MouseEvent| {
+        if delete_busy.get() { return; }
+        let pid = post.get().id.clone();
+        let token = match auth.token.get() { Some(t) => t, None => return };
+        delete_busy.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::delete_post(&token, &pid).await {
+                Ok(()) => on_deleted(pid),
+                Err(e) => leptos::logging::warn!("delete failed: {}", e),
+            }
+            delete_busy.set(false);
+        });
+    };
+
+    let is_mine = move || {
+        auth.user_id.get().map(|uid| uid == post.get().author.id).unwrap_or(false)
+    };
+
     let emojis = ["❤️", "😂", "🔥", "👏", "🙏", "😢"];
 
     view! {
@@ -505,16 +600,74 @@ fn PostCard(post: Post) -> impl IntoView {
             <div class="post-header">
                 <span class="post-author">{move || post.get().author.display_name}</span>
                 <span class="post-time">{move || format_time(post.get().created_at)}</span>
+                {move || is_mine().then(|| view! {
+                    <button
+                        class="btn btn-ghost btn-sm post-delete"
+                        on:click=do_delete
+                        disabled=move || delete_busy.get()
+                        title="delete post"
+                    >
+                        {move || if delete_busy.get() { "…" } else { "🗑" }}
+                    </button>
+                })}
             </div>
             {move || post.get().body.map(|b| view! { <p class="post-body">{b}</p> })}
-            {move || post.get().image_key.map(|k| {
-                let token = auth.token.get().unwrap_or_default();
-                let src = format!("{}/api/media/{}?t={}", crate::api::base(), k, token);
-                view! { <img class="post-image" src=src /> }
-            })}
+
+            // Multi-image carousel (new media_keys path).
+            {move || {
+                let keys = post.get().media_keys;
+                if keys.is_empty() {
+                    None
+                } else {
+                    let count = keys.len();
+                    Some(view! {
+                        <div class="post-carousel">
+                            {move || {
+                                let idx = carousel_idx.get().min(count - 1);
+                                let key = keys[idx].clone();
+                                let token = auth.token.get().unwrap_or_default();
+                                let src = format!("{}/api/media/{}?t={}", api::base(), key, token);
+                                view! { <img class="post-image" src=src /> }
+                            }}
+                            {(count > 1).then(|| view! {
+                                <div class="carousel-controls">
+                                    <button
+                                        class="carousel-btn"
+                                        on:click=move |_| carousel_idx.update(|i| { if *i > 0 { *i -= 1; } })
+                                        disabled=move || carousel_idx.get() == 0
+                                    >"‹"</button>
+                                    <span class="carousel-dot">
+                                        {move || format!("{}/{}", carousel_idx.get() + 1, count)}
+                                    </span>
+                                    <button
+                                        class="carousel-btn"
+                                        on:click=move |_| carousel_idx.update(|i| { if *i + 1 < count { *i += 1; } })
+                                        disabled=move || carousel_idx.get() + 1 >= count
+                                    >"›"</button>
+                                </div>
+                            })}
+                        </div>
+                    })
+                }
+            }}
+
+            // Legacy single image_key (old posts before multi-photo).
+            {move || {
+                if !post.get().media_keys.is_empty() {
+                    None
+                } else {
+                    post.get().image_key.map(|k| {
+                        let token = auth.token.get().unwrap_or_default();
+                        let src = format!("{}/api/media/{}?t={}", api::base(), k, token);
+                        view! { <img class="post-image" src=src /> }
+                    })
+                }
+            }}
+
+            // Video.
             {move || post.get().video_key.map(|k| {
                 let token = auth.token.get().unwrap_or_default();
-                let src = format!("{}/api/media/{}?t={}", crate::api::base(), k, token);
+                let src = format!("{}/api/media/{}?t={}", api::base(), k, token);
                 view! {
                     <video
                         class="post-video"
@@ -525,6 +678,7 @@ fn PostCard(post: Post) -> impl IntoView {
                     ></video>
                 }
             })}
+
             <div class="reactions">
                 {emojis.iter().map(|e| {
                     let e = *e;

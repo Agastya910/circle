@@ -159,7 +159,12 @@ async fn get_media(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let row = db(&ctx.env)?
         .prepare(
             "SELECT 1 as found FROM posts
-             WHERE (image_key = ?1 OR video_key = ?1) AND circle_id = ?2 LIMIT 1",
+             WHERE (image_key = ?1 OR video_key = ?1
+                    OR (media_keys IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM json_each(media_keys) WHERE value = ?1
+                    )))
+               AND circle_id = ?2 AND deleted_at IS NULL
+             LIMIT 1",
         )
         .bind(&[key.clone().into(), circle_id(&ctx.env).into()])?
         .first::<FoundRow>(None)

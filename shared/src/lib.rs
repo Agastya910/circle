@@ -14,6 +14,8 @@ pub struct Post {
     pub body: Option<String>,
     pub image_key: Option<String>,
     pub video_key: Option<String>,
+    #[serde(default)]
+    pub media_keys: Vec<String>,
     pub created_at: i64,
     pub reactions: Vec<ReactionSummary>,
     pub comment_count: u32,
@@ -39,6 +41,8 @@ pub struct NewPostRequest {
     pub body: Option<String>,
     pub image_key: Option<String>,
     pub video_key: Option<String>,
+    #[serde(default)]
+    pub media_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

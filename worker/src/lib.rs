@@ -32,6 +32,7 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/api/invite/redeem", handlers::invite::redeem)
         .get_async("/api/posts", handlers::posts::list)
         .post_async("/api/posts", handlers::posts::create)
+        .delete_async("/api/posts/:id", handlers::posts::delete)
         .get_async("/api/posts/:id/comments", handlers::posts::comments)
         .post_async("/api/posts/:id/comments", handlers::posts::add_comment)
         .post_async("/api/reactions", handlers::reactions::toggle)
