@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     pin_hash     TEXT,
     pin_salt     TEXT,
     push_sub     TEXT,
+    media_bytes  INTEGER NOT NULL DEFAULT 0,
     created_at   INTEGER NOT NULL
 );
 
@@ -51,6 +52,12 @@ CREATE TABLE IF NOT EXISTS invite_codes (
     used_by    TEXT,
     used_at    INTEGER,
     created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_circle_time ON posts(circle_id, created_at DESC);

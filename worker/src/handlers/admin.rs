@@ -3,22 +3,70 @@ use worker::*;
 use crate::db::{circle_id, db};
 use crate::util::{json_error, new_id, now_secs};
 
-pub async fn create_invite(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    // Gate with ADMIN_SECRET env var. Callers send: Authorization: Bearer <secret>
-    // Read from [vars] in wrangler.toml for dev; for prod set via `wrangler secret put ADMIN_SECRET`
-    // and switch this line to ctx.env.secret("ADMIN_SECRET").
-    let secret = match ctx.env.var("ADMIN_SECRET") {
+fn check_admin(req: &Request, env: &Env) -> std::result::Result<(), Response> {
+    let secret = match env.secret("ADMIN_SECRET") {
         Ok(s) => s.to_string(),
-        Err(_) => return json_error(503, "admin not configured (set ADMIN_SECRET var)"),
+        Err(_) => match env.var("ADMIN_SECRET") {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                return Err(json_error(503, "admin not configured").unwrap());
+            }
+        },
     };
-
     let provided = req
         .headers()
-        .get("Authorization")?
+        .get("Authorization")
+        .ok()
+        .flatten()
         .and_then(|h| h.strip_prefix("Bearer ").map(|t| t.to_string()));
-
     if provided.as_deref() != Some(&secret) {
-        return json_error(401, "invalid admin secret");
+        return Err(json_error(401, "invalid admin secret").unwrap());
+    }
+    Ok(())
+}
+
+pub async fn set_passphrase(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    if let Err(r) = check_admin(&req, &ctx.env) {
+        return Ok(r);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Body {
+        passphrase: String,
+    }
+    let body: Body = match req.json().await {
+        Ok(b) => b,
+        Err(e) => return json_error(400, &format!("bad body: {}", e)),
+    };
+
+    let p = body.passphrase.trim();
+    if p.len() < 8 {
+        return json_error(400, "passphrase too short (min 8 chars)");
+    }
+    if p.len() > 200 {
+        return json_error(400, "passphrase too long (max 200 chars)");
+    }
+
+    let now = now_secs();
+    db(&ctx.env)?
+        .prepare(
+            "INSERT INTO admin_settings (key, value, updated_at)
+             VALUES ('invite_passphrase', ?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(&[p.into(), now.into()])?
+        .run()
+        .await?;
+
+    Response::ok(serde_json::json!({"ok": true, "updated_at": now}).to_string()).map(|mut r| {
+        let _ = r.headers_mut().set("Content-Type", "application/json");
+        r
+    })
+}
+
+pub async fn create_invite(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    if let Err(r) = check_admin(&req, &ctx.env) {
+        return Ok(r);
     }
 
     let code = format!("inv-{}", &new_id()[..8]);

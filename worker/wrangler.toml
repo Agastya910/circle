@@ -25,7 +25,6 @@ bucket_name = "circle-media"
 [vars]
 CIRCLE_ID = "default"
 ALLOWED_ORIGIN = "https://circle-app-59w.pages.dev"
-# ADMIN_SECRET is overridden in production via `wrangler secret put ADMIN_SECRET`.
-# Local `wrangler dev` uses this fallback; for local client dev, also override
-# ALLOWED_ORIGIN with `wrangler dev --var ALLOWED_ORIGIN:http://127.0.0.1:8080`.
-ADMIN_SECRET = "dev-admin-secret"
+# ADMIN_SECRET is provisioned via `wrangler secret put ADMIN_SECRET` (not [vars])
+# so it doesn't appear in source. For `wrangler dev`, set it locally with
+# `wrangler dev --var ADMIN_SECRET:dev-admin-secret`.

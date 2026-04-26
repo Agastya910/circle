@@ -2,6 +2,73 @@
 
 ---
 
+## v1.2.0 — Self-service invites + media upload bug fix (2026-04-25)
+
+### What changed
+
+**Self-service invites via portfolio.**
+Friends can now mint their own invite codes by visiting a page on the portfolio (`/circle`) and entering the current passphrase. The passphrase is rotated weekly by Agastya from `/circle/admin` using the worker's `ADMIN_SECRET` as the auth gate. New worker endpoints: `POST /api/invite/redeem` (public, validates passphrase, mints a fresh single-use code) and `POST /api/admin/passphrase` (Bearer-auth, rotates the active phrase). State lives in a new `admin_settings` D1 table ([migrations/0003_admin_settings.sql](migrations/0003_admin_settings.sql)). Portfolio side is a thin Next.js proxy — no admin secret ever ships to the browser bundle.
+
+**Bug fix: image/video upload returned HTTP 500.**
+The per-user storage-cap code introduced in v1.1 bound `bytes.len() as i64` to the D1 `UPDATE users SET media_bytes = …` statement. workers-rs serialises Rust `i64` as a JS BigInt, which D1 rejects with `D1_TYPE_ERROR: Type 'bigint' not supported`. Switched the column read/write and the constant to `f64` to match the rest of the codebase ([worker/src/handlers/media.rs](worker/src/handlers/media.rs)). f64 mantissa is 53 bits so all values up to ~9 PB round-trip exactly.
+
+**ADMIN_SECRET source-of-truth.**
+Removed the `ADMIN_SECRET = "dev-admin-secret"` line from `wrangler.toml [vars]` so it can no longer shadow the real secret on deploy. Handlers now prefer `env.secret("ADMIN_SECRET")` and fall back to `env.var()` for `wrangler dev` convenience. Refactored `create_invite` to share the same `check_admin` helper as `set_passphrase`.
+
+---
+
+## v1.1.0 — Cross-browser video, Cloudflare deployment, and storage caps (2026-04-25)
+
+### Live URLs
+- **App**: https://circle-app-59w.pages.dev
+- **API**: https://circle-api.agastyatodi.workers.dev
+
+### What changed
+
+**Cross-browser video compression.**
+The original `client/video.js` recorder only emitted WebM, which iOS Safari neither produces (no WebM `MediaRecorder` support) nor plays back. The MIME-candidate list now tries `video/mp4;codecs=avc1.42E01E,mp4a.40.2` (H.264 baseline + AAC-LC) first and falls back to WebM/VP9/VP8 for Chromium and Firefox. The chosen extension is propagated end-to-end so each blob lands in R2 with the right `Content-Type`:
+- `shared::UploadUrlRequest` gained an optional `ext` field
+- The Compose component reads `blob.type()` and forwards `mp4` or `webm`
+- `worker/src/handlers/media.rs` validates `ext` per kind, names the R2 key with the right suffix, and serves both `video/webm` and `video/mp4` on read
+
+**Per-user storage cap.**
+Each user is now capped at **500 MB** of cumulative R2 storage (≈100 videos at the 5 MB-per-clip ceiling, or 250 photos at 2 MB each). With ten users this consumes at most half of R2's 10 GB free tier. Implementation:
+- New `users.media_bytes INTEGER NOT NULL DEFAULT 0` column ([migrations/0002_user_media_bytes.sql](migrations/0002_user_media_bytes.sql))
+- `put_media` reads the running total, rejects with HTTP 413 if the new upload would exceed the cap, and increments the counter on success
+- The check is post-compression, so the on-device WebP/MP4 encoders are doing the lifting. There is no separate per-day or per-post rate limit — the cumulative cap is the only governor.
+
+**Cloudflare deployment (live).**
+- D1 `circle-db` (`b1e8176f-…`) seeded with [schema.sql](schema.sql) (6 tables) + 11 invite codes
+- R2 bucket `circle-media` bound for media storage
+- Worker `circle-api` deployed to `https://circle-api.agastyatodi.workers.dev`
+- Pages project `circle-app` deployed to `https://circle-app-59w.pages.dev`
+- All required secrets set in the worker: `SESSION_SECRET`, `ADMIN_SECRET`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`
+- `wrangler.toml` `ALLOWED_ORIGIN` points at the Pages production URL; CORS preflight verified
+
+**Repo hygiene.**
+- Project-local git initialized (a stray `~/.git` from an editor accident was removed)
+- `.gitignore` excludes `target/`, `client/dist/`, `worker/build/`, `.env*`, `.wrangler/`, `.claude/`, editor folders
+- Local-only `.env` written with `CF_ACCOUNT_ID`, `API_BASE`, `PAGES_URL`, `FIRST_INVITE_CODE`, `ADMIN_SECRET`; `CF_API_TOKEN` left blank for the operator to mint
+- Initial commit `a4a23ec`; remote `origin` set to https://github.com/Agastya910/circle.git but not pushed
+
+### Files touched
+- `client/video.js` — added MP4/H.264/AAC candidates ahead of WebM
+- `shared/src/lib.rs` — `UploadUrlRequest.ext: Option<String>`
+- `client/src/api.rs` — `get_upload_url(token, kind, ext)` signature
+- `client/src/components.rs` — extracts `ext` from blob MIME before requesting upload URL
+- `worker/src/handlers/media.rs` — `ext` allowlist, MP4 read-side mapping, per-user cap check + counter increment
+- `schema.sql` — `users.media_bytes` column added
+- `migrations/0002_user_media_bytes.sql` — new
+- `worker/wrangler.toml` — `ALLOWED_ORIGIN` set to Pages URL
+- `.gitignore`, `.env` — new
+
+### What is NOT in this release
+- **GitHub Actions auto-deploy.** The workflow exists but the repo-side secrets/vars (`CF_API_TOKEN`, `CF_ACCOUNT_ID`, `API_BASE`) are not set, so push-to-deploy is dormant. Manual deploy works via `wrangler deploy` (worker) and `wrangler pages deploy client/dist --project-name=circle-app`.
+- **Per-user upload deletion / pruning.** The cap only grows; users will need to wait for a future "delete post" feature (or manual D1 surgery) to free space.
+- **Encrypted push payloads, passkeys, comments drawer, SSR, avatar upload.** Same as v1.0.
+
+---
+
 ## v1.0.0 — Initial scaffold (2026-04-24)
 
 ### What this project is

@@ -8,6 +8,9 @@ use crate::util::{json_error, new_id};
 
 const MAX_IMAGE_BYTES: usize = 2_000_000;       // 2 MB
 const MAX_VIDEO_BYTES: usize = 5_000_000;       // 5 MB compressed-on-client cap
+// Per-user cumulative storage cap. R2 free tier is 10 GB; this keeps a
+// 10-user circle inside half the free tier with comfortable headroom.
+const MAX_USER_BYTES: f64 = 524_288_000.0;      // 500 MB per user
 
 pub async fn upload_url(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let session = match require_session(&req, &ctx.env).await {
@@ -76,9 +79,27 @@ async fn put_media(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
         );
     }
 
+    let used = db(&ctx.env)?
+        .prepare("SELECT media_bytes FROM users WHERE id = ?1")
+        .bind(&[session.user_id.clone().into()])?
+        .first::<UserBytesRow>(None)
+        .await?
+        .map(|r| r.media_bytes)
+        .unwrap_or(0.0);
+    let added = bytes.len() as f64;
+    if used + added > MAX_USER_BYTES {
+        return json_error(
+            413,
+            &format!(
+                "storage cap reached ({} of {} bytes used)",
+                used as u64, MAX_USER_BYTES as u64
+            ),
+        );
+    }
+
     ctx.env
         .bucket("MEDIA")?
-        .put(&key, bytes)
+        .put(&key, bytes.clone())
         .http_metadata(HttpMetadata {
             content_type: Some(content_type.into()),
             ..Default::default()
@@ -86,10 +107,21 @@ async fn put_media(mut req: Request, ctx: RouteContext<()>) -> Result<Response> 
         .execute()
         .await?;
 
+    let _ = db(&ctx.env)?
+        .prepare("UPDATE users SET media_bytes = media_bytes + ?1 WHERE id = ?2")
+        .bind(&[added.into(), session.user_id.clone().into()])?
+        .run()
+        .await;
+
     Response::ok(r#"{"ok":true}"#).map(|mut r| {
         let _ = r.headers_mut().set("Content-Type", "application/json");
         r
     })
+}
+
+#[derive(serde::Deserialize)]
+struct UserBytesRow {
+    media_bytes: f64,
 }
 
 async fn get_media(req: Request, ctx: RouteContext<()>) -> Result<Response> {
